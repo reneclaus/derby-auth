@@ -16,7 +16,14 @@ var passport = require('passport')
 module.exports = function(store, strategies, options) {
 
     // Setup queries & accessControl
-    setupStore(store);
+	setupStore.setupQueries(store) ;
+	if (options.setupAccessControl) {
+		options.setupAccessControl(store) ;
+		delete options.setupAccessControl ;
+	}
+	else {
+		setupStore.setupAccessControl(store) ;
+	}
 
     // Setup default options
     _.defaults(options, {

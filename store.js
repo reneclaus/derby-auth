@@ -119,3 +119,6 @@ module.exports = function(store) {
     setupQueries(store);
     setupAccessControl(store);
 };
+module.exports.setupQueries = setupQueries ;
+module.exports.setupAccessControl = setupAccessControl ;
+ 
