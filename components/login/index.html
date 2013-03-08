@@ -12,10 +12,20 @@
                 <span class="help-inline">{.errors.password}</span>
             </div>
 
-            {#if .canSubmit}
-                <input type="submit" value="Login" class="btn"/>
-            {else}
-                <input type="submit" value="Login" class="btn disabled" disabled/>
-            {/}
+            <input type="submit" value="Login" class="btn"/>
+        </form>
+
+        <a x-bind="click:showPasswordReset">Forgot Password</a>
+        <form id="derby-auth-password-reset" x-bind="submit:submitPasswordReset" method='post' style='display:none;' class='well'>
+            <h3>Email New Password</h3>
+
+            <div class="alert alert-success">{.success.passwordReset}</div>
+
+            <div class="control-group {#if .errors.passwordReset}error{/}">
+                <input type='text' name="email" placeholder="Email" value="{.passwordResetEmail}"/>
+                <span class="help-inline">{.errors.passwordReset}</span>
+            </div>
+
+            <input type="submit" value="Submit" class="btn"/>
         </form>
     {/}

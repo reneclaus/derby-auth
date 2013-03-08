@@ -24,15 +24,39 @@ var
 ```
 
 ###Step 2
+Initialize the Store (queries, accessControl, etc)
+```javascript
+// initialize queries and accessControl
+auth.store(store);
+```
+
+###Step 3
 Use derby-auth's mounted middleware
 ```javascript
 .use(store.modelMiddleware())
 // derby-auth.middleware is inserted after modelMiddleware and before the app router to pass server accessible data to a model
-.use(auth(store, strategies, options))
+.use(auth.middleware(strategies, options))
 .use(app.router())
 ```
 
-###Step 3 (optional, recommended)
+Also, *make sure* your express app is using sessions:
+```javascript
+# Uncomment and supply secret to add Derby session handling
+# Derby session middleware creates req.session and socket.io sessions
+.use(express.cookieParser())
+.use(store.sessionMiddleware
+  secret: process.env.SESSION_SECRET || 'YOUR SECRET HERE'
+  cookie: {maxAge: ONE_YEAR}
+)
+```
+
+And finaly, we need to add form data parsing support:
+```javascript
+// Uncomment to add form data parsing support
+.use(express.bodyParser())
+```
+
+###Step 4 (optional, recommended)
 If you want drop-in Login and Register forms, including form validation, use the `<derby-auth:login />` and `<derby-auth:register />` [components](http://derbyjs.com/#component_libraries). To enable these, you'll need this in your `/lib/app/index.js` file:
 ```javascript
    derby.use(require('derby-auth/components'));

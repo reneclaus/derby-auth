@@ -1,5 +1,6 @@
-var check = require('validator').check,
-    sanitize = require('validator').sanitize,
+var validator = require('../../node_modules/validator/validator-min'),
+    check = validator.check,
+    sanitize = validator.sanitize,
     utils = require('../../utils')
 
 exports.init = function(model) {
@@ -26,13 +27,13 @@ exports.create = function(model, dom) {
         }
     });
 
-    model.on('set', 'emailConfirmation', function(emailConfirmation){
-        if (!emailConfirmation) return
+    model.on('set', 'passwordConfirmation', function(passwordConfirmation){
+        if (!passwordConfirmation) return
         try {
-            check(emailConfirmation).equals(model.get('email'));
-            model.set('errors.emailConfirmation', '');
+            check(passwordConfirmation).equals(model.get('password'));
+            model.set('errors.passwordConfirmation', '');
         } catch (err) {
-            model.set('errors.emailConfirmation', err.message);
+            model.set('errors.passwordConfirmation', err.message);
         }
     });
 
@@ -49,8 +50,8 @@ exports.create = function(model, dom) {
     model.on('set', 'errors.*', function(error){
         var m = model.get(),
             canSubmit = false;
-        if (!m.errors.username && !m.errors.email && !m.errors.emailConfirmation && !m.errors .password &&
-            !!m.username && !!m.email && !!m.emailConfirmation && !!m.password) {
+        if (!m.errors.username && !m.errors.email && !m.errors.passwordConfirmation && !m.errors.password &&
+            !!m.username && !!m.email && !!m.passwordConfirmation && !!m.password) {
             canSubmit = true;
         }
         model.set('canSubmit', canSubmit);
@@ -65,7 +66,7 @@ exports.usernameBlur = function(){
     rootModel.fetch(q, function(err, users) {
         try {
             if (err) throw new Error(err);
-            var userObj = utils.extractUser(users);
+            var userObj = users.get()
             if (userObj) throw new Error('Username already taken');
         } catch (err) {
             model.set('errors.username', err.message);
@@ -81,7 +82,7 @@ exports.emailBlur = function(){
     rootModel.fetch(q, function(err, users) {
         try {
             if (err) throw new Error(err);
-            var userObj = utils.extractUser(users);
+            var userObj = users.get()
             if (userObj) throw new Error('Email already taken');
         } catch (err) {
             model.set('errors.email', err.message);

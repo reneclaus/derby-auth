@@ -1,29 +1,23 @@
 var passport = require('passport')
     , LocalStrategy = require('passport-local').Strategy
     , flash = require('connect-flash') // used for setting error messages
-    , _  = require('underscore')
+    , _  = require('lodash')
     , expressApp = require('express')()
     , setupStore = require('./store')
     , utils = require('./utils')
+    , nodemailer = require("nodemailer")
   ;
+
+module.exports.store = function(store, customAccessControl) {
+    setupStore(store, customAccessControl);
+}
 
 /**
  * Provides "mounted" (sub-app) middleware which provides authentication for DerbyJS
- * @param {store} Racer store, used for configuring queries and accessControl
  * @param {strategies} A hash of strategy objects and their configurations. See https://github.com/lefnire/derby-examples/blob/master/authentication/src/server/index.coffee
  * @param {options} TODO document this
  */
-module.exports = function(store, strategies, options) {
-
-    // Setup queries & accessControl
-	setupStore.setupQueries(store) ;
-	if (options.setupAccessControl) {
-		options.setupAccessControl(store) ;
-		delete options.setupAccessControl ;
-	}
-	else {
-		setupStore.setupAccessControl(store) ;
-	}
+module.exports.middleware = function(strategies, options) {
 
     // Setup default options
     _.defaults(options, {
@@ -43,6 +37,8 @@ module.exports = function(store, strategies, options) {
     expressApp.use(passport.initialize());
     expressApp.use(passport.session());
 
+    setupPassport(strategies, options);
+
     // Setup static passport authentication routes
     setupStaticRoutes(expressApp, strategies, options);
 
@@ -55,6 +51,8 @@ module.exports = function(store, strategies, options) {
  */
 function setupMiddleware(strategies, options) {
     return function(req, res, next) {
+        if (req.is('json')) return next() // don't create new users / authenticate on REST calls
+
         var model = req.getModel()
             , sess = model.session;
 
@@ -66,93 +64,112 @@ function setupMiddleware(strategies, options) {
         // New User - They get to play around before creating a new account.
         if (!sess.userId) {
             sess.userId = model.id();
-            _.defaults(options.schema, {auth:{}}); // make sure user schema is defaulted with at least {auth:{}}
-            model.set("users." + sess.userId, options.schema);
+            var schema = _.cloneDeep(options.schema);
+            _.defaults(schema, {auth:{}}); // make sure user schema is defaulted with at least {auth:{}}
+            model.set("users." + sess.userId, schema);
         }
-
-        // Passport session setup.
-        //   To support persistent login sessions, Passport needs to be able to
-        //   serialize users into and deserialize users out of the session.  Typically,
-        //   this will be as simple as storing the user ID when serializing, and finding
-        //   the user by ID when deserializing.
-        passport.serializeUser(function(uid, done) {
-            done(null, uid);
-        });
-
-        passport.deserializeUser(function(id, done) {
-            return done(null, id);
-
-            // TODO Revisit:
-            // Because we're logging a user into req.session on passport strategy authentication,
-            // we don't need to deserialize the user. (Plus the app will be pulling the user out of the
-            // database manually via model.fetch / .subscribe). Additionally, attempting to deserialize the user here
-            // by fetching from the database yields "Error: Model mutation performed after bundling for clientId:..."
-            /*var q = model.query('users').withId(id);
-            _fetchUser(q, model, function(err, userObj){
-              if(err && !err.notFound) return done(err);
-              _loginUser(model, userObj, done);
-            });*/
-        });
-
-        // Use the LocalStrategy within Passport.
-        //   Strategies in passport require a `verify` function, which accept
-        //   credentials (in this case, a username and password), and invoke a callback
-        //   with a user object.  In the real world, this would query a database;
-        //   however, in this example we are using a baked-in set of users.
-        passport.use(new LocalStrategy(
-            function(username, password, done) {
-                // Find the user by username.  If there is no user with the given
-                // username, or the password is not correct, set the user to `false` to
-                // indicate failure and set a flash message.  Otherwise, return the
-                // authenticated `user`.
-                var q = model.query('users').withUsername(username);
-                _fetchUser(q, model, function(err, userObj){
-                    if (err && err.notFound) return done(null, false, err);// user not found
-                    if (err) return done(err); // real error
-					
-                    q = model.query('users').withLogin(username, utils.encryptPassword(password, userObj.auth.local.salt));
-                    _fetchUser(q, model, function(err, userObj){
-                        if (err && err.notFound) return done(null, false, err);// user not found
-                        if (err) return done(err); // real error
-                        _loginUser(model, userObj, done);
-                    });
-                });
-            }
-        ));
-
-        _.each(strategies, function(obj, name){
-
-            // Provide default values for options not passed in
-            // TODO pass in as conf URL variable
-            _.defaults(obj.conf, {callbackURL: options.domain + "/auth/" + name + "/callback"});
-
-            // Use the FacebookStrategy within Passport.
-            //   Strategies in Passport require a `verify` function, which accept
-            //   credentials (in this case, an accessToken, refreshToken, and Facebook
-            //   profile), and invoke a callback with a user object.
-            passport.use(new obj.strategy(obj.conf, function(accessToken, refreshToken, profile, done) {
-                    // To keep the example simple, the user's Facebook profile is returned to
-                    // represent the logged-in user.  In a typical application, you would want
-                    // to associate the Facebook account with a user record in your database,
-                    // and return that user instead.
-                    var q = model.query('users').withProvider(profile.provider, profile.id);
-                    _fetchUser(q, model, function(err, userObj){
-                        if (err && !err.notFound) return done(err);
-
-                        // User exists, but hasn't yet been associated with social network
-                        if(err && err.notFound) {
-                            var userPath = "users." + model.session.userId;
-                            model.set(userPath + '.auth.' + profile.provider, profile);
-                            userObj = model.get(userPath);
-                        }
-                        _loginUser(model, userObj, done);
-                    });
-                }
-            ));
-        });
 
         return next();
     }
+}
+
+function setupPassport(strategies, options) {
+    // Passport session setup.
+    //   To support persistent login sessions, Passport needs to be able to
+    //   serialize users into and deserialize users out of the session.  Typically,
+    //   this will be as simple as storing the user ID when serializing, and finding
+    //   the user by ID when deserializing.
+    passport.serializeUser(function(uid, done) {
+        done(null, uid);
+    });
+
+    passport.deserializeUser(function(id, done) {
+        return done(null, id);
+
+        // TODO Revisit:
+        // Because we're logging a user into req.session on passport strategy authentication,
+        // we don't need to deserialize the user. (Plus the app will be pulling the user out of the
+        // database manually via model.fetch / .subscribe). Additionally, attempting to deserialize the user here
+        // by fetching from the database yields "Error: Model mutation performed after bundling for clientId:..."
+        /*var q = model.query('users').withId(id);
+         _fetchUser(q, model, function(err, userObj){
+         if(err && !err.notFound) return done(err);
+         _loginUser(model, userObj, done);
+         });*/
+    });
+
+    // Use the LocalStrategy within Passport.
+    //   Strategies in passport require a `verify` function, which accept
+    //   credentials (in this case, a username and password), and invoke a callback
+    //   with a user object.  In the real world, this would query a database;
+    //   however, in this example we are using a baked-in set of users.
+    passport.use(new LocalStrategy(
+        {passReqToCallback:true}, // required so we can access model.getModel()
+        function(req, username, password, done) {
+            var model = req.getModel()
+            // Find the user by username.  If there is no user with the given
+            // username, or the password is not correct, set the user to `false` to
+            // indicate failure and set a flash message.  Otherwise, return the
+            // authenticated `user`.
+            var q = model.query('users').withUsername(username);
+            q.fetch(function(err, result1){
+                if (err) return done(err); // real error
+                var u1 = result1.get()
+                if (!u1) return done(null, false, {message:'User not found with that username.'});// user not found
+
+                // We needed the whole user object first so we can get his salt to encrypt password comparison
+                q = model.query('users').withLogin(username, utils.encryptPassword(password, u1.auth.local.salt));
+                q.fetch(function(err, result2){
+                    if (err) return done(err); // real error
+                    if(process.env.NODE_ENV==='development') console.log(u2);
+                    var u2 = result2.get()
+                    if (!u2) return done(null, false, {message:'Password incorrect.'});// user not found
+                    _loginUser(model, u2, done);
+                });
+            });
+        }
+    ));
+
+    _.each(strategies, function(obj, name){
+
+        // Provide default values for options not passed in
+        // TODO pass in as conf URL variable
+        _.defaults(obj.conf, {
+            callbackURL: options.domain + "/auth/" + name + "/callback",
+            passReqToCallback:true // required so we can access model.getModel()
+        });
+
+        // Use the FacebookStrategy within Passport.
+        //   Strategies in Passport require a `verify` function, which accept
+        //   credentials (in this case, an accessToken, refreshToken, and Facebook
+        //   profile), and invoke a callback with a user object.
+        passport.use(new obj.strategy(obj.conf, function(req, accessToken, refreshToken, profile, done) {
+                var model = req.getModel()
+
+                // If facebook user exists, log that person in. If not, associate facebook user
+                // with currently "staged" user account - then log them in
+
+                var providerQ = model.query('users').withProvider(profile.provider, profile.id),
+                    currentUserQ = model.query('users').withId(model.get('_userId') || model.session.userId);
+
+                model.fetch(providerQ, currentUserQ, function(err, providerUser, currentUser) {
+                    if (err) return done(err);
+
+                    var userObj = providerUser.get()
+                    if (!userObj) {
+                        var currentUserScope = currentUser;
+                        currentUserScope.set('auth.' + profile.provider, profile);
+                        currentUserScope.set('auth.timestamps.created', +new Date);
+                        userObj = currentUserScope.get();
+                        if (!userObj && !userObj.id) return done("Something went wrong trying to tie #{profile.provider} account to staged user")
+                    }
+
+                    // User was found, log in
+                    _loginUser(model, userObj, done);
+                });
+            }
+        ));
+    });
 }
 
 /**
@@ -219,8 +236,10 @@ function setupStaticRoutes(expressApp, strategies, options) {
             , sess = model.session;
 
         var q = model.query('users').withUsername(req.body.username);
-        _fetchUser(q, model, function(err, userObj){
-            if (err && !err.notFound) return next(err);
+        q.fetch(function(err, result){
+            if (err) return next(err)
+
+            var userObj = result.get();
 
             // current user already registered, return
             if (model.get('users.' + sess.userId + '.auth.local')) return res.redirect('/');
@@ -238,6 +257,7 @@ function setupStaticRoutes(expressApp, strategies, options) {
                         hashed_password: utils.encryptPassword(req.body.password, salt)
                     };
                 model.set('users.' + sess.userId + '.auth.local', localAuth);
+                model.set('users.' + sess.userId + '.auth.timestamps.created', new Date());
                 req.login(sess.userId, function(err) {
                     if (err) { return next(err); }
                     return res.redirect('/');
@@ -247,13 +267,14 @@ function setupStaticRoutes(expressApp, strategies, options) {
     });
 
     _.each(strategies, function(strategy, name){
+        params = strategy.params || {}
         // GET /auth/facebook
         //   Use passport.authenticate() as route middleware to authenticate the
         //   request.  The first step in Facebook authentication will involve
         //   redirecting the user to facebook.com.  After authorization, Facebook will
         //   redirect the user back to this application at /auth/facebook/callback
         expressApp.get('/auth/'+name,
-            passport.authenticate(name),
+            passport.authenticate(name, params),
             function(req, res){
                 // The request will be redirected to Facebook for authentication, so this
                 // function will not be called.
@@ -277,6 +298,53 @@ function setupStaticRoutes(expressApp, strategies, options) {
         res.redirect('/');
     });
 
+    expressApp.post('/password-reset', function(req, res, next){
+        var model = req.getModel(),
+            email = req.body.email,
+            salt = utils.makeSalt(),
+            newPassword =  utils.makeSalt(), // use a salt as the new password too (they'll change it later)
+            hashed_password = utils.encryptPassword(newPassword, salt);
+
+        model.query('users').withEmail(email).fetch(function(err, user){
+            if (err) return next(err);
+            var userObj = user.get();
+            if (!userObj) return res.send(500, "Couldn't find a user registered for email " + email);
+
+            req._isServer = true; // our bypassing of session-based accessControl
+            user.set('auth.local.salt', salt);
+            user.set('auth.local.hashed_password', hashed_password);
+            sendEmail({
+                from: "HabitRPG <admin@habitrpg.com>",
+                to: email,
+                subject: "Password Reset for HabitRPG",
+                text: "Password for " + userObj.auth.local.username + " has been reset to " + newPassword + ". Log in at https://habitrpg.com",
+                html: "Password for <strong>" + userObj.auth.local.username + "</strong> has been reset to <strong>" + newPassword + "</strong>. Log in at https://habitrpg.com"
+            });
+            return res.send('New password sent to '+ email);
+        });
+    })
+
+    expressApp.post('/password-change', function(req, res, next){
+
+        var model = req.getModel(),
+            uid = req.body.uid;
+
+        model.query('users').withId(uid).fetch(function(err, user){
+            var errMsg = "Couldn't find that user (this shouldn't be happening, contact Tyler: http://goo.gl/nrx99)",
+                userObj;
+            if (err || !(userObj = user.get() )) return res.send(500, err || errMsg);
+
+            var salt = userObj.auth.local.salt,
+                hashed_old_password = utils.encryptPassword(req.body.oldPassword, salt),
+                hashed_new_password = utils.encryptPassword(req.body.newPassword, salt);
+
+            if (hashed_old_password !== userObj.auth.local.hashed_password) return res.send(500, "Old password doesn't match");
+
+            user.set('auth.local.hashed_password', hashed_new_password);
+            return res.send(200);
+        });
+    })
+
     // Simple route middleware to ensure user is authenticated.
     //   Use this route middleware on any resource that needs to be protected.  If
     //   the request is authenticated (typically via a persistent login session),
@@ -293,26 +361,33 @@ function setupStaticRoutes(expressApp, strategies, options) {
  * -------------------
  */
 
-function _fetchUser(query, model, callback){
-    model.fetch(query, function(err, users) {
-        // There was a real, server-crashing error
-        if (err) return callback(err);
-
-        // Fetch the user
-        var userObj, u;
-        userObj = users && (u = users.get()) && u.length > 0 && u[0];
-        if (process.env.NODE_ENV!=='production') console.log({err:err, user:userObj});
-
-        // If no user found, return an object which can be used for sending a flash error message
-        if (!userObj) return callback({notFound:true, message:'Invalid Login.'});
-
-        // User was found, return it
-        return callback(null, userObj);
-    });
-}
 
 function _loginUser(model, userObj, done) {
     model.session.userId = userObj.id;
+    model.set('users.' + userObj.id + '.auth.timestamps.loggedin', new Date());
     // done() sets req.user, which is later referenced to determine _loggedIn
     if (done) done(null, userObj.id);
+}
+
+function sendEmail(mailData) {
+    // create reusable transport method (opens pool of SMTP connections)
+    // TODO derby-auth isn't currently configurable here, if you need customizations please send pull request
+    var smtpTransport = nodemailer.createTransport("SMTP",{
+        service: process.env.SMTP_SERVICE,
+        auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+        }
+    });
+
+    // send mail with defined transport object
+    smtpTransport.sendMail(mailData, function(error, response){
+        if(error){
+            console.log(error);
+        }else{
+            console.log("Message sent: " + response.message);
+        }
+
+        smtpTransport.close(); // shut down the connection pool, no more messages
+    });
 }

@@ -6,7 +6,7 @@ var http = require('http')
   , app = require('../auth')
   , serverError = require('./serverError')
   , MongoStore = require('connect-mongo')(express)
-  , dbUri = 'mongodb://localhost/derby-auth'
+  , dbUri = 'mongodb://localhost/derby-auth';
 
 var expressApp = express(),
     server = http.createServer(expressApp)
@@ -75,6 +75,8 @@ var
   , options = { domain: 'http://localhost:3000' }
   ;
 
+auth.store(store);
+
 expressApp
     .use(express.favicon())
     .use(gzippo.staticGzip(publicPath, {maxAge: ONE_YEAR}))
@@ -93,7 +95,7 @@ expressApp
      * derbyAuth.middleware is inserted after modelMiddleware and before the app router to pass server accessible data to a model
      * Pass in {store} (sets up accessControl & queries), {strategies} (see above), and options
      */
-    .use(auth(store, strategies, options))
+    .use(auth.middleware(strategies, options))
 
     .use(app.router())
     .use(expressApp.router)
